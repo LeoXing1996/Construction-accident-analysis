@@ -5,6 +5,10 @@ import requests
 from selenium import webdriver
 from time import sleep
 
+isJan = 0
+isOth = 1
+isDec = 2
+
 class getText:
 
     def __init__(self, url, folder=None):
@@ -12,17 +16,22 @@ class getText:
         self.driver = None
         self.SUMMARY = []
         self.ACCIDENT = []
+        self.status = None # 保存是否正常启动
+
         if folder is None:
-            self.folderSum = 'text/Summary'
-            self.folderAcc = 'text/Accident'
+            self.folderSum = 'text/Summary/'
+            self.folderAcc = 'text/Accident/'
         else :
             self.folderSum, self.folderAcc = folder
 
     def __setup(self):
+        # todo 鉴于住建部网站时常 gg 增设网站监测与自动退出机制 防止报错
         url = self.urlBase + 'index.html'
-        self.driver = webdriver.Chrome()
-        self.driver.get(url)
         print('启动中，请稍后......')
+
+        if self.driver is None:
+            self.driver = webdriver.Chrome()
+        self.driver.get(url)
         sleep(3)
 
     def __makedir(self):
@@ -32,10 +41,8 @@ class getText:
             os.makedirs(self.folderSum)
 
     def __isSummary(self, title):
-        if title[0].isdigit():
-            return True
-        else:
-            return False
+
+        return [False, True][title[0].isdigit()]
 
     def __getTotalPages(self):
 
@@ -63,23 +70,21 @@ class getText:
                 self.ACCIDENT.append([title_text, title_url])
                 print('ACCIDENT:', title_text, title_url)
 
-    def __isDec(self, title):
-        pattern = re.compile(r'\d+月')
-        return [False, True][pattern.search(title).group() == '12月']
-
-    def __getAccessory(self, isDec):
-        # 下载月份概况中的附件
-        # 根据 是否为年末数据 决定查找情况
+    def __getAccessory(self):
         xpath_arr = [
             '/html/body/table/tbody/tr[2]/td/table[2]/tbody[2]/tr[2]/td/table/tbody/tr[8]/td/table/tbody/tr/td/div[2]/table/tbody/tr[1]/td[2]/a',
             '/html/body/table/tbody/tr[2]/td/table[2]/tbody[2]/tr[2]/td/table/tbody/tr[8]/td/table/tbody/tr/td/div[2]/table/tbody/tr[2]/td[2]/a',
             '/html/body/table/tbody/tr[2]/td/table[2]/tbody[2]/tr[2]/td/table/tbody/tr[8]/td/table/tbody/tr/td/div[2]/table/tbody/tr[3]/td[2]/a'
         ]
 
-        for xpath in xpath_arr[:[2, 3][isDec]]:
-            accessory = self.driver.find_element_by_xpath(xpath)
-            xlsURL = accessory.get_property('href')
-            xlsNAME = accessory.text
+        for xpath in xpath_arr:
+
+            try:
+                accessory = self.driver.find_element_by_xpath(xpath)
+                xlsURL = accessory.get_property('href')
+                xlsNAME = accessory.text
+            except:
+                continue
 
             print('     开始下载 《%s》 ' % xlsNAME, end='')
             r = requests.get(xlsURL)
@@ -99,36 +104,42 @@ class getText:
                 with open('failLog.txt', 'a') as log:
                     log.write(xlsNAME + '    ' + xlsURL)
 
-    def __getSummaryContent(self, tarPath, isDec):
+    def __getSummaryContent(self, tarPath):
         #  获取 Summary 形式的所有文本
 
         par = self.driver.find_elements_by_tag_name('p')
         with open(tarPath, 'w', encoding='utf-8') as file:
-            for p in par[1:[-4, -5][isDec]]:
-                file.write(p.text + '\n')
+            for p in par[1:]:
+                t_text = p.text.strip()
+                if t_text.split('：') == '附件':
+                    break
+                else:
+                    file.write(p.text + '\n')
         print('     文本已保存到 %s' % tarPath)
 
     def __getSummary(self):
         print('开始保存统计数据')
-        montPattern = re.compile(r'\d+年\d+月')
+        monthPattern = re.compile(r'\d+年\d+月')
         yearPattern = re.compile(r'\d+年.*年')
+        quarterPattern = re.compile(r'\d+年.*季度')
+        patterns = [monthPattern, yearPattern, quarterPattern]
+
         count = 1
         for title, url in self.SUMMARY:
-            print('正在保存第 %d 组.....' % count)
-            try:
-                fileName = montPattern.search(title).group()
-                isDec = self.__isDec(title)
-            except:
-                fileName = yearPattern.search(title).group()
-                isDec = False
+            print('正在保存第 %d/%d 组.....' % (count, len(self.SUMMARY)))
+            fileName = str(count)
+            for p in patterns:
+                res = p.search(title)
+                if res is not None:
+                    fileName = res.group()
+                    break
 
             tarPath = self.folderSum + fileName + '.txt'
-
             self.driver.get(url)
-            self.__getSummaryContent(tarPath, isDec)
-            self.__getAccessory(isDec)
-
+            self.__getSummaryContent(tarPath)
+            self.__getAccessory()
             count += 1
+            sleep(1)
 
     def __getAccident(self):
 
@@ -136,7 +147,7 @@ class getText:
 
         count = 1
         for title, url in self.ACCIDENT:
-            print('正在保存第 %d 条《%s》.....' % (count, title), end='')
+            print('正在保存第 %d/%d 条《%s》.....' % (count, len(self.ACCIDENT), title), end='')
 
             self.driver.get(url)
             text = self.driver.find_elements_by_tag_name('p')[1:]
@@ -146,12 +157,13 @@ class getText:
                     file.write(t.text + '\n')
             count += 1
             print('已保存到 %d.txt' % count)
+            sleep(1)
+
         print('\n事故文本保存完成')
 
     def downloadText(self):
-
+        # todo 从文件中加载 以及 断线重下
         self.__setup()
-
         totalPages = self.__getTotalPages()
 
         for p in range(totalPages):
@@ -161,21 +173,29 @@ class getText:
 
             url = self.urlBase + 'index_' + str(p+2) + '.html'
             self.driver.get(url)
-
+            sleep(0.5)
         print('获取完毕!    共获取：')
         print('     事故数据：%d' % len(self.ACCIDENT))
         print('     统计数据：%d' % len(self.SUMMARY))
 
+        with open('ACC.txt','w', encoding='utf-8') as file:
+            for text, url in self.ACCIDENT:
+                file.write(text + '     ' + url)
+        with open('SUM.txt','w', encoding='utf-8') as file:
+            for text, url in self.SUMMARY:
+                file.write(text + '     ' + url)
+
     def saveText(self):
+
+        if self.SUMMARY == [] and self.ACCIDENT == []:
+            return
+
         print('开始保存')
         self.__makedir()
         self.__getAccident()
         self.__getSummary()
-        # todo Code here
         print('保存完毕')
         self.driver.close()
-
-
 
 if __name__ == '__main__':
     url = 'http://www.mohurd.gov.cn/zlaq/cftb/zfhcxjsbcftb/'
